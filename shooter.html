@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Void Shooter</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0d0d1a; overflow: hidden; font-family: 'Segoe UI', sans-serif; cursor: crosshair; }
+    canvas { display: block; }
+    #ui {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: none;
+    }
+    .overlay {
+      display: none; flex-direction: column;
+      align-items: center; gap: 18px;
+      pointer-events: all; text-align: center; color: #eee;
+    }
+    .overlay.active { display: flex; }
+    h1 {
+      font-size: 3.2rem; letter-spacing: 4px;
+      color: #e94560; text-shadow: 0 0 30px #e9456099;
+    }
+    h2 { font-size: 2rem; color: #e94560; }
+    .subtitle { color: #a8dadc; font-size: 1rem; line-height: 1.7; }
+    .hi-score { color: #666; font-size: 0.9rem; }
+    .new-hi { color: #ffd700; font-size: 1.1rem; font-weight: bold; }
+    button {
+      padding: 0.65rem 2rem; border: none; border-radius: 8px;
+      font-size: 1rem; cursor: pointer; transition: opacity 0.15s;
+      background: #e94560; color: #fff; margin: 3px;
+    }
+    button:hover { opacity: 0.8; }
+    button.sec {
+      background: #16213e; border: 1px solid #a8dadc33; color: #a8dadc;
+    }
+    .instructions {
+      color: #555; font-size: 0.82rem; line-height: 1.8;
+    }
+  </style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="ui">
+  <div id="screen-menu" class="overlay active">
+    <h1>VOID SHOOTER</h1>
+    <p class="subtitle">Survive endless waves of enemies</p>
+    <p class="instructions">
+      WASD / Arrows — Move &nbsp;|&nbsp; Mouse — Aim &nbsp;|&nbsp; Hold Click — Shoot
+    </p>
+    <p class="hi-score" id="menu-hi">Best: 0</p>
+    <button id="btn-play">PLAY</button>
+  </div>
+
+  <div id="screen-gameover" class="overlay">
+    <h2>GAME OVER</h2>
+    <p class="subtitle" id="go-score"></p>
+    <p class="new-hi" id="go-newhi" style="display:none">★ NEW HIGH SCORE ★</p>
+    <p class="hi-score" id="go-hi"></p>
+    <div>
+      <button id="btn-again">PLAY AGAIN</button>
+      <button class="sec" id="btn-menu">MENU</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Canvas ────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('game');
+const ctx    = canvas.getContext('2d');
+function resize() { canvas.width = innerWidth; canvas.height = innerHeight; }
+addEventListener('resize', resize);
+resize();
+
+// ── State machine ────────────────────────────────────────────────────────
+const S = { MENU: 0, WAVE_BANNER: 1, PLAYING: 2, GAME_OVER: 3 };
+let gameState = S.MENU;
+
+// ── Persistent data ──────────────────────────────────────────────────────
+let hiScore = parseInt(localStorage.getItem('vs_hi') || '0', 10);
+
+// ── Input ────────────────────────────────────────────────────────────────
+const keys  = {};
+const mouse = { x: 0, y: 0, down: false };
+addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; });
+addEventListener('keyup',   e => { keys[e.key.toLowerCase()] = false; });
+canvas.addEventListener('mousemove', e => { mouse.x = e.clientX; mouse.y = e.clientY; });
+canvas.addEventListener('mousedown', e => { if (e.button === 0) mouse.down = true; });
+canvas.addEventListener('mouseup',   e => { if (e.button === 0) mouse.down = false; });
+canvas.addEventListener('contextmenu', e => e.preventDefault());
+
+// ── Config ───────────────────────────────────────────────────────────────
+const CFG = {
+  playerR:      18,
+  playerSpeed:  185,
+  barrelLen:    26,
+  shootCD:      0.18,
+  iFrames:      1.1,
+  maxHp:        3,
+  bulletR:      5,
+  bulletSpeed:  530,
+  waveBanner:   2.2,
+};
+
+const ENEMY_DEF = {
+  basic: { r: 18, hp: 1, speed: 72,  color: '#e94560', outline: '#8b1a2a', score: 10, wave: 1 },
+  fast:  { r: 12, hp: 1, speed: 148, color: '#f4d03f', outline: '#9a7d0a', score: 15, wave: 2 },
+  tank:  { r: 28, hp: 3, speed: 44,  color: '#9b59b6', outline: '#5b2c7a', score: 30, wave: 3 },
+};
+
+// ── Game variables ───────────────────────────────────────────────────────
+let player, bullets, enemies;
+let score, wave, waveTimer;
+let spawnQueue, spawnIdx, spawnTimer, spawnInterval;
+
+// ── Init / reset ─────────────────────────────────────────────────────────
+function initPlayer() {
+  player = {
+    x: canvas.width  / 2,
+    y: canvas.height / 2,
+    angle:      0,
+    hp:         CFG.maxHp,
+    shootTimer: 0,
+    iTimer:     0,
+    hitFlash:   0,
+  };
+}
+
+function startGame() {
+  score   = 0;
+  wave    = 0;
+  bullets = [];
+  enemies = [];
+  initPlayer();
+  nextWave();
+}
+
+function nextWave() {
+  wave++;
+  const count = 5 + (wave - 1) * 3;
+  const pool  = Object.keys(ENEMY_DEF).filter(k => ENEMY_DEF[k].wave <= wave);
+  spawnQueue    = Array.from({ length: count }, () => pool[Math.floor(Math.random() * pool.length)]);
+  spawnIdx      = 0;
+  spawnInterval = Math.max(0.28, 1.1 - wave * 0.055);
+  spawnTimer    = 0;
+  waveTimer     = CFG.waveBanner;
+  gameState     = S.WAVE_BANNER;
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────
+function dist2(ax, ay, bx, by) { const dx = ax-bx, dy = ay-by; return dx*dx+dy*dy; }
+function overlap(ax, ay, ar, bx, by, br) { const t = ar+br; return dist2(ax,ay,bx,by) < t*t; }
+
+function edgeSpawn(r) {
+  const edge = Math.floor(Math.random() * 4);
+  const m    = r + 4;
+  switch (edge) {
+    case 0: return { x: Math.random() * canvas.width,  y: -m };
+    case 1: return { x: canvas.width  + m, y: Math.random() * canvas.height };
+    case 2: return { x: Math.random() * canvas.width,  y: canvas.height + m };
+    default:return { x: -m, y: Math.random() * canvas.height };
+  }
+}
+
+function doSpawn(type) {
+  const d    = ENEMY_DEF[type];
+  const pos  = edgeSpawn(d.r);
+  const mult = 1 + (wave - 1) * 0.07;
+  enemies.push({
+    x: pos.x, y: pos.y,
+    type, r: d.r, hp: d.hp, maxHp: d.hp,
+    speed: d.speed * mult,
+    color: d.color, outline: d.outline,
+    score: d.score, flash: 0,
+  });
+}
+
+function fireBullet() {
+  const ox = Math.cos(player.angle);
+  const oy = Math.sin(player.angle);
+  bullets.push({
+    x:  player.x + ox * (CFG.playerR + CFG.barrelLen),
+    y:  player.y + oy * (CFG.playerR + CFG.barrelLen),
+    vx: ox * CFG.bulletSpeed,
+    vy: oy * CFG.bulletSpeed,
+  });
+}
+
+// ── Update ───────────────────────────────────────────────────────────────
+function update(dt) {
+  // Player movement (allowed in banner too)
+  let dx = 0, dy = 0;
+  if (keys['a'] || keys['arrowleft'])  dx -= 1;
+  if (keys['d'] || keys['arrowright']) dx += 1;
+  if (keys['w'] || keys['arrowup'])    dy -= 1;
+  if (keys['s'] || keys['arrowdown'])  dy += 1;
+  if (dx && dy) { dx *= 0.7071; dy *= 0.7071; }
+  player.x = Math.max(CFG.playerR, Math.min(canvas.width  - CFG.playerR, player.x + dx * CFG.playerSpeed * dt));
+  player.y = Math.max(CFG.playerR, Math.min(canvas.height - CFG.playerR, player.y + dy * CFG.playerSpeed * dt));
+  player.angle = Math.atan2(mouse.y - player.y, mouse.x - player.x);
+
+  // Shoot
+  player.shootTimer -= dt;
+  if (mouse.down && player.shootTimer <= 0) {
+    fireBullet();
+    player.shootTimer = CFG.shootCD;
+  }
+
+  // Timers
+  if (player.iTimer   > 0) player.iTimer   -= dt;
+  if (player.hitFlash > 0) player.hitFlash -= dt;
+
+  // Wave banner countdown
+  if (gameState === S.WAVE_BANNER) {
+    waveTimer -= dt;
+    if (waveTimer <= 0) gameState = S.PLAYING;
+    return;
+  }
+
+  // ── Bullets ──
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
+    if (b.x < -20 || b.x > canvas.width+20 || b.y < -20 || b.y > canvas.height+20)
+      bullets.splice(i, 1);
+  }
+
+  // ── Spawning ──
+  if (spawnIdx < spawnQueue.length) {
+    spawnTimer -= dt;
+    if (spawnTimer <= 0) {
+      doSpawn(spawnQueue[spawnIdx++]);
+      spawnTimer = spawnInterval;
+    }
+  }
+
+  // ── Enemies ──
+  for (let i = enemies.length - 1; i >= 0; i--) {
+    const e   = enemies[i];
+    const ang = Math.atan2(player.y - e.y, player.x - e.x);
+    e.x += Math.cos(ang) * e.speed * dt;
+    e.y += Math.sin(ang) * e.speed * dt;
+    if (e.flash > 0) e.flash -= dt;
+
+    // Enemy touches player
+    if (overlap(e.x, e.y, e.r, player.x, player.y, CFG.playerR) && player.iTimer <= 0) {
+      player.hp--;
+      player.iTimer   = CFG.iFrames;
+      player.hitFlash = 0.14;
+      enemies.splice(i, 1);
+      if (player.hp <= 0) { gameOver(); return; }
+      continue;
+    }
+
+    // Bullets hit enemy
+    let killed = false;
+    for (let j = bullets.length - 1; j >= 0; j--) {
+      const b = bullets[j];
+      if (overlap(b.x, b.y, CFG.bulletR, e.x, e.y, e.r)) {
+        bullets.splice(j, 1);
+        e.hp--;
+        e.flash = 0.1;
+        if (e.hp <= 0) {
+          score += e.score;
+          enemies.splice(i, 1);
+          killed = true;
+        }
+        break;
+      }
+    }
+    if (killed) continue;
+  }
+
+  // ── Wave complete? ──
+  if (spawnIdx >= spawnQueue.length && enemies.length === 0) {
+    score += 50;
+    nextWave();
+  }
+}
+
+function gameOver() {
+  gameState = S.GAME_OVER;
+  const isNew = score > hiScore;
+  if (isNew) { hiScore = score; localStorage.setItem('vs_hi', hiScore); }
+  document.getElementById('go-score').textContent  = `Score: ${score}`;
+  document.getElementById('go-hi').textContent     = `Best: ${hiScore}`;
+  document.getElementById('go-newhi').style.display = isNew ? 'block' : 'none';
+  document.getElementById('screen-gameover').classList.add('active');
+}
+
+// ── Draw helpers ─────────────────────────────────────────────────────────
+function circle(x, y, r, fill, stroke, lw) {
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI*2);
+  if (fill)   { ctx.fillStyle   = fill;  ctx.fill();   }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw || 2; ctx.stroke(); }
+}
+
+// ── Draw ─────────────────────────────────────────────────────────────────
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Background
+  ctx.fillStyle = '#0d0d1a';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // Grid
+  ctx.strokeStyle = '#ffffff06';
+  ctx.lineWidth   = 1;
+  const G = 64;
+  for (let x = 0; x < canvas.width;  x += G) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x, canvas.height); ctx.stroke(); }
+  for (let y = 0; y < canvas.height; y += G) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width, y);  ctx.stroke(); }
+
+  if (gameState === S.MENU) return;
+
+  // ── Enemies ──
+  for (const e of enemies) {
+    const col = e.flash > 0 ? '#ffffff' : e.color;
+    circle(e.x, e.y, e.r, col, e.outline, 2.5);
+
+    // HP bar for tanks
+    if (e.maxHp > 1) {
+      const bw = e.r * 2;
+      const bh = 5;
+      const bx = e.x - e.r;
+      const by = e.y - e.r - 10;
+      ctx.fillStyle = '#222';
+      ctx.fillRect(bx, by, bw, bh);
+      ctx.fillStyle = e.color;
+      ctx.fillRect(bx, by, (e.hp / e.maxHp) * bw, bh);
+    }
+  }
+
+  // ── Bullets ──
+  ctx.save();
+  ctx.shadowColor = '#a8dadc';
+  ctx.shadowBlur  = 10;
+  for (const b of bullets) {
+    circle(b.x, b.y, CFG.bulletR, '#c8eef0', null);
+  }
+  ctx.restore();
+
+  // ── Player ──
+  const blinking = player.iTimer > 0 && Math.floor(player.iTimer * 10) % 2 === 1;
+  if (!blinking) {
+    const bodyCol = player.hitFlash > 0 ? '#ffffff' : '#1abc9c';
+    const rimCol  = player.hitFlash > 0 ? '#aaffee' : '#0d7a63';
+
+    // Body
+    circle(player.x, player.y, CFG.playerR, bodyCol, rimCol, 3);
+
+    // Barrel
+    const ox = Math.cos(player.angle);
+    const oy = Math.sin(player.angle);
+    const bx1 = player.x + ox * (CFG.playerR - 4);
+    const by1 = player.y + oy * (CFG.playerR - 4);
+    const bx2 = player.x + ox * (CFG.playerR + CFG.barrelLen);
+    const by2 = player.y + oy * (CFG.playerR + CFG.barrelLen);
+    ctx.save();
+    ctx.lineCap     = 'round';
+    ctx.strokeStyle = rimCol;
+    ctx.lineWidth   = 9;
+    ctx.beginPath(); ctx.moveTo(bx1, by1); ctx.lineTo(bx2, by2); ctx.stroke();
+    ctx.strokeStyle = '#3de8c4';
+    ctx.lineWidth   = 5;
+    ctx.beginPath(); ctx.moveTo(bx1, by1); ctx.lineTo(bx2, by2); ctx.stroke();
+    ctx.restore();
+  }
+
+  // ── HUD ──
+  ctx.textAlign = 'right';
+  ctx.fillStyle = '#eee';
+  ctx.font      = 'bold 22px Segoe UI';
+  ctx.fillText(`${score}`, canvas.width - 20, 36);
+  ctx.fillStyle = '#555';
+  ctx.font      = '13px Segoe UI';
+  ctx.fillText(`SCORE`, canvas.width - 20, 54);
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#555';
+  ctx.font      = '13px Segoe UI';
+  ctx.fillText(`WAVE`, 20, 54);
+  ctx.fillStyle = '#eee';
+  ctx.font      = 'bold 22px Segoe UI';
+  ctx.fillText(`${wave}`, 20, 36);
+
+  // Hearts
+  const heartX = canvas.width / 2 - (CFG.maxHp * 18);
+  for (let i = 0; i < CFG.maxHp; i++) {
+    ctx.font      = '26px serif';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = i < player.hp ? '#e94560' : '#2a2a2a';
+    ctx.fillText('♥', heartX + i * 38, 38);
+  }
+
+  // ── Wave banner ──
+  if (gameState === S.WAVE_BANNER) {
+    const elapsed  = CFG.waveBanner - waveTimer;
+    const fadeIn   = Math.min(1, elapsed  / 0.3);
+    const fadeOut  = Math.min(1, waveTimer / 0.6);
+    const alpha    = Math.min(fadeIn, fadeOut);
+    ctx.save();
+    ctx.globalAlpha = Math.max(0, alpha);
+    ctx.textAlign   = 'center';
+    ctx.font        = 'bold 64px Segoe UI';
+    ctx.fillStyle   = '#e94560';
+    ctx.shadowColor = '#e94560';
+    ctx.shadowBlur  = 30;
+    ctx.fillText(`WAVE ${wave}`, canvas.width/2, canvas.height/2 - 10);
+    ctx.font      = '22px Segoe UI';
+    ctx.fillStyle = '#a8dadc';
+    ctx.shadowBlur= 0;
+    ctx.fillText(waveSubtitle(wave), canvas.width/2, canvas.height/2 + 30);
+    ctx.restore();
+  }
+}
+
+function waveSubtitle(w) {
+  if (w === 1) return 'Survive!';
+  if (w === 2) return 'Fast ones incoming...';
+  if (w === 3) return 'Tanks approaching!';
+  if (w % 5 === 0) return '★ Danger zone ★';
+  return `Wave ${w} — stay sharp`;
+}
+
+// ── Loop ─────────────────────────────────────────────────────────────────
+let lastTs = null;
+function loop(ts) {
+  requestAnimationFrame(loop);
+  if (lastTs === null) { lastTs = ts; return; }
+  const dt = Math.min((ts - lastTs) / 1000, 0.05);
+  lastTs   = ts;
+  if (gameState === S.PLAYING || gameState === S.WAVE_BANNER) update(dt);
+  draw();
+}
+requestAnimationFrame(loop);
+
+// ── Buttons ───────────────────────────────────────────────────────────────
+function showMenu() {
+  document.getElementById('screen-menu').classList.add('active');
+  document.getElementById('screen-gameover').classList.remove('active');
+  document.getElementById('menu-hi').textContent = `Best: ${hiScore}`;
+  gameState = S.MENU;
+}
+
+document.getElementById('btn-play').addEventListener('click', () => {
+  document.getElementById('screen-menu').classList.remove('active');
+  startGame();
+});
+document.getElementById('btn-again').addEventListener('click', () => {
+  document.getElementById('screen-gameover').classList.remove('active');
+  startGame();
+});
+document.getElementById('btn-menu').addEventListener('click', showMenu);
+
+document.getElementById('menu-hi').textContent = `Best: ${hiScore}`;
+</script>
+</body>
+</html>

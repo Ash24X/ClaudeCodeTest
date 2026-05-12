@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Tic Tac Toe</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', sans-serif;
+      background: #1a1a2e;
+      color: #eee;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+
+    h1 {
+      font-size: 2rem;
+      margin-bottom: 0.5rem;
+      letter-spacing: 2px;
+      color: #e94560;
+    }
+
+    #status {
+      font-size: 1.1rem;
+      margin-bottom: 1.5rem;
+      min-height: 1.5em;
+      color: #a8dadc;
+    }
+
+    #board {
+      display: grid;
+      grid-template-columns: repeat(3, 110px);
+      grid-template-rows: repeat(3, 110px);
+      gap: 8px;
+    }
+
+    .cell {
+      background: #16213e;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 3rem;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+      user-select: none;
+    }
+
+    .cell:hover:not(.taken) {
+      background: #0f3460;
+      transform: scale(1.04);
+    }
+
+    .cell.x { color: #e94560; }
+    .cell.o { color: #a8dadc; }
+
+    .cell.win {
+      background: #0f3460;
+      box-shadow: 0 0 12px 3px rgba(233, 69, 96, 0.5);
+    }
+
+    #controls {
+      margin-top: 1.8rem;
+      display: flex;
+      gap: 1rem;
+    }
+
+    button {
+      padding: 0.55rem 1.4rem;
+      border: none;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+
+    button:hover { opacity: 0.85; }
+
+    #restart {
+      background: #e94560;
+      color: #fff;
+    }
+
+    #mode-toggle {
+      background: #0f3460;
+      color: #a8dadc;
+      border: 1px solid #a8dadc44;
+    }
+
+    #score {
+      margin-top: 1.4rem;
+      display: flex;
+      gap: 2rem;
+      font-size: 0.95rem;
+      color: #888;
+    }
+
+    #score span { color: #ccc; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <h1>Tic Tac Toe</h1>
+  <div id="status">X's turn</div>
+  <div id="board"></div>
+  <div id="controls">
+    <button id="restart">Restart</button>
+    <button id="mode-toggle">vs Computer</button>
+  </div>
+  <div id="score">
+    X wins: <span id="x-wins">0</span>
+    Draws: <span id="draws">0</span>
+    O wins: <span id="o-wins">0</span>
+  </div>
+
+  <script>
+    const WINS = [[0,1,2],[3,4,5],[6,7,8],[0,3,6],[1,4,7],[2,5,8],[0,4,8],[2,4,6]];
+
+    let board, current, gameOver, vsComputer;
+    let score = { X: 0, O: 0, D: 0 };
+    vsComputer = false;
+
+    const boardEl = document.getElementById('board');
+    const statusEl = document.getElementById('status');
+    const modeBtn = document.getElementById('mode-toggle');
+
+    function init() {
+      board = Array(9).fill(null);
+      current = 'X';
+      gameOver = false;
+      render();
+      setStatus(`${current}'s turn`);
+    }
+
+    function render() {
+      boardEl.innerHTML = '';
+      board.forEach((val, i) => {
+        const cell = document.createElement('div');
+        cell.className = 'cell' + (val ? ` ${val.toLowerCase()} taken` : '');
+        cell.textContent = val || '';
+        cell.addEventListener('click', () => handleClick(i));
+        boardEl.appendChild(cell);
+      });
+    }
+
+    function highlightWin(combo) {
+      const cells = boardEl.querySelectorAll('.cell');
+      combo.forEach(i => cells[i].classList.add('win'));
+    }
+
+    function checkWinner() {
+      for (const combo of WINS) {
+        const [a, b, c] = combo;
+        if (board[a] && board[a] === board[b] && board[a] === board[c]) {
+          return { winner: board[a], combo };
+        }
+      }
+      if (board.every(Boolean)) return { winner: null, combo: [] };
+      return null;
+    }
+
+    function setStatus(msg) { statusEl.textContent = msg; }
+
+    function handleClick(i) {
+      if (gameOver || board[i] || (vsComputer && current === 'O')) return;
+      place(i);
+    }
+
+    function place(i) {
+      board[i] = current;
+      render();
+      const result = checkWinner();
+      if (result !== null) {
+        gameOver = true;
+        if (result.winner) {
+          score[result.winner]++;
+          updateScore();
+          highlightWin(result.combo);
+          setStatus(`${result.winner} wins!`);
+        } else {
+          score.D++;
+          updateScore();
+          setStatus("It's a draw!");
+        }
+        return;
+      }
+      current = current === 'X' ? 'O' : 'X';
+      setStatus(`${current}'s turn`);
+      if (vsComputer && current === 'O') {
+        setTimeout(computerMove, 400);
+      }
+    }
+
+    function computerMove() {
+      if (gameOver) return;
+      const move = bestMove();
+      place(move);
+    }
+
+    function bestMove() {
+      // Try to win
+      for (let i = 0; i < 9; i++) {
+        if (!board[i]) {
+          board[i] = 'O';
+          if (checkWinner()?.winner === 'O') { board[i] = null; return i; }
+          board[i] = null;
+        }
+      }
+      // Block X
+      for (let i = 0; i < 9; i++) {
+        if (!board[i]) {
+          board[i] = 'X';
+          if (checkWinner()?.winner === 'X') { board[i] = null; return i; }
+          board[i] = null;
+        }
+      }
+      // Prefer center, then corners, then edges
+      const preferred = [4, 0, 2, 6, 8, 1, 3, 5, 7];
+      return preferred.find(i => !board[i]);
+    }
+
+    function updateScore() {
+      document.getElementById('x-wins').textContent = score.X;
+      document.getElementById('o-wins').textContent = score.O;
+      document.getElementById('draws').textContent = score.D;
+    }
+
+    document.getElementById('restart').addEventListener('click', init);
+
+    modeBtn.addEventListener('click', () => {
+      vsComputer = !vsComputer;
+      modeBtn.textContent = vsComputer ? 'vs Human' : 'vs Computer';
+      score = { X: 0, O: 0, D: 0 };
+      updateScore();
+      init();
+    });
+
+    init();
+  </script>
+</body>
+</html>
